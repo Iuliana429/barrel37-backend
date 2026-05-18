@@ -7,9 +7,17 @@ const app = express();
 app.use(cors());
 
 // --- DB SETUP ---
-const env = process.env.NODE_ENV || 'development';
-const config = require('./config/config.json')[env];
-const sequelize = new Sequelize(config);
+// --- DB SETUP ---
+const sequelize = new Sequelize(process.env.DATABASE_URL, {
+    dialect: 'postgres',
+    protocol: 'postgres',
+    dialectOptions: {
+        ssl: {
+            require: true,
+            rejectUnauthorized: false
+        }
+    }
+});
 
 // --- MODELS (Strictly Relational & 3NF) ---
 const Category = sequelize.define('Category', {
