@@ -161,7 +161,7 @@ if (process.env.NODE_ENV !== 'test') {
     // For tests, expose a function that initializes Apollo middleware and REST paths on the app instance
     async function initTestMiddleware() {
         await sequelize.sync({ force: false });
-        const server = new ApolloServer({ typeDefs, resolvers });
+        const server = new ApolloServer({ typeDefs, resolvers, introspection: true });
         await server.start();
         server.applyMiddleware({ app });
 
