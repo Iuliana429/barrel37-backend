@@ -11,25 +11,27 @@ const env = process.env.NODE_ENV || 'development';
 const config = require('./config/config.json')[env];
 const sequelize = new Sequelize(config);
 
-// --- MODELS ---
+// --- MODELS (Strictly Relational & 3NF) ---
 const Category = sequelize.define('Category', {
-    name: { type: DataTypes.STRING, allowNull: false }
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    name: { type: DataTypes.STRING, allowNull: false, unique: true }
 });
 
 const Item = sequelize.define('Item', {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     name: { type: DataTypes.STRING, allowNull: false },
     price: { type: DataTypes.FLOAT, allowNull: false },
     desc: { type: DataTypes.STRING },
     categoryId: { type: DataTypes.INTEGER, allowNull: false }
 });
 
-// 1-to-Many
-Category.hasMany(Item, { foreignKey: 'categoryId' });
+// 1-to-Many Relationship
+Category.hasMany(Item, { foreignKey: 'categoryId', onDelete: 'CASCADE' });
 Item.belongsTo(Category, { foreignKey: 'categoryId' });
 
 let generatorInterval = null;
 
-// --- GRAPHQL SCHEMA (same as your original server.js) ---
+// --- GRAPHQL SCHEMA ---
 const typeDefs = gql`
   type Category { id: ID!  name: String!  items: [Item] }
   type Item     { id: ID!  name: String!  price: Float!  desc: String  category: Category }
@@ -49,7 +51,7 @@ const typeDefs = gql`
   }
 `;
 
-// --- RESOLVERS (now using Sequelize instead of RAM) ---
+// --- RESOLVERS ---
 const resolvers = {
     Query: {
         items: async (_, { page = 1, limit = 6 }) => {
@@ -81,11 +83,11 @@ const resolvers = {
 
     Mutation: {
         addItem: async (_, { name, price, categoryId, desc }) => {
-            const item = await Item.create({ name, price, categoryId, desc });
+            const item = await Item.create({ name, price, categoryId: parseInt(categoryId), desc });
             return Item.findByPk(item.id, { include: Category });
         },
         updateItem: async (_, { id, name, price, categoryId, desc }) => {
-            await Item.update({ name, price, categoryId, desc }, { where: { id } });
+            await Item.update({ name, price, categoryId: parseInt(categoryId), desc }, { where: { id } });
             return Item.findByPk(id, { include: Category });
         },
         deleteItem: async (_, { id }) => {
@@ -94,13 +96,13 @@ const resolvers = {
         },
         toggleGenerator: (_, { action }) => {
             const drinkNames = {
-                "1": ["Negroni", "Manhattan", "Whiskey Sour", "Mojito", "Espresso Martini"],
-                "2": ["Double Apple", "Minty Grape", "Blueberry Ice", "Watermelon Chill"],
-                "3": ["Chardonnay", "Cabernet Sauvignon", "Pinot Noir", "Merlot"]
+                1: ["Negroni", "Manhattan", "Whiskey Sour", "Mojito", "Espresso Martini"],
+                2: ["Double Apple", "Minty Grape", "Blueberry Ice", "Watermelon Chill"],
+                3: ["Chardonnay", "Cabernet Sauvignon", "Pinot Noir", "Merlot"]
             };
             if (action === 'start' && !generatorInterval) {
                 generatorInterval = setInterval(async () => {
-                    const catId = String(Math.floor(Math.random() * 3) + 1);
+                    const catId = Math.floor(Math.random() * 3) + 1;
                     const names = drinkNames[catId];
                     await Item.create({
                         name: names[Math.floor(Math.random() * names.length)],
@@ -121,8 +123,12 @@ const resolvers = {
 };
 
 async function startServer() {
-   // await sequelize.sync({ alter: true });
     await sequelize.sync({ force: false });
+
+    // --- SEED CATEGORIES AUTOMATICALLY ---
+    await Category.findOrCreate({ where: { id: 1 }, defaults: { name: 'Cocktail' } });
+    await Category.findOrCreate({ where: { id: 2 }, defaults: { name: 'Shisha' } });
+    await Category.findOrCreate({ where: { id: 3 }, defaults: { name: 'Wine' } });
 
     const server = new ApolloServer({ typeDefs, resolvers });
     await server.start();
@@ -131,10 +137,31 @@ async function startServer() {
     app.get('/api/items', (req, res) => res.json({ ok: true }));
 
     if (process.env.NODE_ENV !== 'test') {
-        app.listen(5000, () => console.log('🚀 DB Server ready at http://localhost:5000/graphql'));
+        // Dynamic port selection for cloud environments like Render
+        const PORT = process.env.PORT || 5000;
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`🚀 DB Server ready on port ${PORT}`);
+        });
     }
 }
 
-startServer();
+// --- SAFE SERVER INVOCATION ---
+// --- SAFE SERVER INVOCATION ---
+if (process.env.NODE_ENV !== 'test') {
+    startServer();
+} else {
+    // For tests, expose a function that initializes Apollo middleware and REST paths on the app instance
+    async function initTestMiddleware() {
+        await sequelize.sync({ force: false });
+        const server = new ApolloServer({ typeDefs, resolvers });
+        await server.start();
+        server.applyMiddleware({ app });
+
+        // Register the REST test endpoint so Supertest can find it during testing
+        app.get('/api/items', (req, res) => res.json({ ok: true }));
+    }
+    // Fire it immediately
+    initTestMiddleware();
+}
 
 module.exports = { app, sequelize, Category, Item };

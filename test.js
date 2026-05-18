@@ -2,12 +2,23 @@
 const { app, sequelize, Category, Item } = require('./serverDB');
 
 beforeAll(async () => {
+    // 1. Force clear and reconstruct the database tables cleanly
     await sequelize.sync({ force: true });
-    const cat = await Category.create({ name: 'Cocktail' });
-    await Item.create({ name: 'Negroni', price: 60, categoryId: cat.id, desc: 'Test' });
+
+    // 2. Explicitly seed the required 3NF Categories so relationships work
+    await Category.create({ id: 1, name: 'Cocktail' });
+    await Category.create({ id: 2, name: 'Shisha' });
+    await Category.create({ id: 3, name: 'Wine' });
+
+    // 3. Create a dummy item attached to the Cocktail category for queries
+    await Item.create({ name: 'Negroni', price: 60, categoryId: 1, desc: 'Test' });
+
+    // 4. Give Apollo Server a brief moment to finish binding to the app instance
+    await new Promise(resolve => setTimeout(resolve, 500));
 });
 
 afterAll(async () => {
+    // Close the database connection clean and square after all assertions complete
     await sequelize.close();
 });
 
