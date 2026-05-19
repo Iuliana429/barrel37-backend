@@ -7,15 +7,27 @@ const app = express();
 app.use(cors());
 
 // --- DB SETUP ---
-const sequelize = new Sequelize(process.env.DATABASE_URL, {
-    dialect: 'postgres',
-    dialectOptions: {
-        ssl: {
-            require: true,
-            rejectUnauthorized: false
-        }
-    }
-});
+let sequelize;
+
+if (process.env.NODE_ENV === 'test') {
+    sequelize = new Sequelize({
+        dialect: 'sqlite',
+        storage: ':memory:',
+        logging: false
+    });
+} else {
+    sequelize = new Sequelize(process.env.DATABASE_URL || "postgres://avnadmin:AVNS_tzD2DWTzG47jcFlU1-R@pg-3ce41d0e-ioniuliana05-5798.j.aivencloud.com:22591/defaultdb?ssl=true&sslmode=no-verify", {
+        dialect: 'postgres',
+        protocol: 'postgres',
+        dialectOptions: {
+            ssl: {
+                require: true,
+                rejectUnauthorized: false
+            }
+        },
+        logging: false
+    });
+}
 
 // --- MODELS (Strictly Relational & 3NF) ---
 const Category = sequelize.define('Category', {
@@ -31,9 +43,28 @@ const Item = sequelize.define('Item', {
     categoryId: { type: DataTypes.INTEGER, allowNull: false }
 });
 
-// 1-to-Many Relationship
+// --- USER & ROLE MODELS (Silver Challenge) ---
+const Role = sequelize.define('Role', {
+    name: { type: DataTypes.STRING, allowNull: false, unique: true }
+});
+
+const Permission = sequelize.define('Permission', {
+    action: { type: DataTypes.STRING, allowNull: false, unique: true }
+});
+
+const User = sequelize.define('User', {
+    username: { type: DataTypes.STRING, allowNull: false, unique: true }
+});
+
+// --- RELATIONSHIPS ---
 Category.hasMany(Item, { foreignKey: 'categoryId', onDelete: 'CASCADE' });
 Item.belongsTo(Category, { foreignKey: 'categoryId' });
+
+Role.hasMany(User, { foreignKey: 'roleId' });
+User.belongsTo(Role, { foreignKey: 'roleId' });
+
+Role.belongsToMany(Permission, { through: 'RolePermissions' });
+Permission.belongsToMany(Role, { through: 'RolePermissions' });
 
 let generatorInterval = null;
 
@@ -128,22 +159,36 @@ const resolvers = {
     }
 };
 
+// --- SERVER INITIALIZATION ---
 async function startServer() {
     await sequelize.sync({ force: false });
 
-    // --- SEED CATEGORIES AUTOMATICALLY ---
+    // --- SEED CATEGORIES ---
     await Category.findOrCreate({ where: { id: 1 }, defaults: { name: 'Cocktail' } });
     await Category.findOrCreate({ where: { id: 2 }, defaults: { name: 'Shisha' } });
     await Category.findOrCreate({ where: { id: 3 }, defaults: { name: 'Wine' } });
 
-    const server = new ApolloServer({ typeDefs, resolvers });
+    // --- SEED ROLES & USERS FOR SILVER CHALLENGE ---
+    const [adminRole] = await Role.findOrCreate({ where: { name: 'admin' } });
+    const [normalRole] = await Role.findOrCreate({ where: { name: 'normal user' } });
+
+    await User.findOrCreate({
+        where: { username: 'Admin_Boss' },
+        defaults: { roleId: adminRole.id }
+    });
+
+    await User.findOrCreate({
+        where: { username: 'Standard_Steve' },
+        defaults: { roleId: normalRole.id }
+    });
+
+    const server = new ApolloServer({ typeDefs, resolvers, introspection: true });
     await server.start();
     server.applyMiddleware({ app });
 
     app.get('/api/items', (req, res) => res.json({ ok: true }));
 
     if (process.env.NODE_ENV !== 'test') {
-        // Dynamic port selection for cloud environments like Render
         const PORT = process.env.PORT || 5000;
         app.listen(PORT, '0.0.0.0', () => {
             console.log(`🚀 DB Server ready on port ${PORT}`);
@@ -152,22 +197,17 @@ async function startServer() {
 }
 
 // --- SAFE SERVER INVOCATION ---
-// --- SAFE SERVER INVOCATION ---
 if (process.env.NODE_ENV !== 'test') {
     startServer();
 } else {
-    // For tests, expose a function that initializes Apollo middleware and REST paths on the app instance
     async function initTestMiddleware() {
         await sequelize.sync({ force: false });
         const server = new ApolloServer({ typeDefs, resolvers, introspection: true });
         await server.start();
         server.applyMiddleware({ app });
-
-        // Register the REST test endpoint so Supertest can find it during testing
         app.get('/api/items', (req, res) => res.json({ ok: true }));
     }
-    // Fire it immediately
     initTestMiddleware();
 }
 
-module.exports = { app, sequelize, Category, Item };
+module.exports = { app, sequelize, Category, Item, User, Role, Permission };

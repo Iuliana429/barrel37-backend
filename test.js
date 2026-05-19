@@ -1,5 +1,6 @@
 ﻿const request = require('supertest');
-const { app, sequelize, Category, Item } = require('./serverDB');
+//const { app, sequelize, Category, Item } = require('./serverDB'); -> A3 bronze
+const { app, sequelize, Category, Item, User, Role, Permission } = require('./serverDB');
 
 beforeAll(async () => {
     // 1. Force clear and reconstruct the database tables cleanly
