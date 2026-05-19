@@ -20,7 +20,7 @@
         "express": "^5.2.1",
         "faker": "^5.5.3",
         "graphql": "^16.13.2",
-        "mongoose": "^9.6.1",
+        "mongoose": "^9.6.2",
         "pg": "^8.21.0",
         "pg-hstore": "^2.3.4",
         "sequelize": "^6.37.8",

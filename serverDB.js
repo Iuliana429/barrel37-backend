@@ -2,6 +2,10 @@
 const { ApolloServer, gql } = require('apollo-server-express');
 const cors = require('cors');
 const { Sequelize, DataTypes } = require('sequelize');
+// --- NEW TOOLS FOR SILVER CHALLENGE ---
+const http = require('http');
+const { Server } = require('socket.io');
+const mongoose = require('mongoose');
 
 const app = express();
 app.use(cors());
@@ -55,6 +59,14 @@ const Permission = sequelize.define('Permission', {
 const User = sequelize.define('User', {
     username: { type: DataTypes.STRING, allowNull: false, unique: true }
 });
+
+// --- NoSQL CHAT SCHEMA (MongoDB) ---
+const chatSchema = new mongoose.Schema({
+    user: String,
+    text: String,
+    time: { type: Date, default: Date.now }
+});
+const ChatMessage = mongoose.model('ChatMessage', chatSchema);
 
 // --- RELATIONSHIPS ---
 Category.hasMany(Item, { foreignKey: 'categoryId', onDelete: 'CASCADE' });
@@ -161,37 +173,67 @@ const resolvers = {
 
 // --- SERVER INITIALIZATION ---
 async function startServer() {
+    // 1. Connect to Postgres (Aiven)
     await sequelize.sync({ force: false });
-
-    // --- SEED CATEGORIES ---
     await Category.findOrCreate({ where: { id: 1 }, defaults: { name: 'Cocktail' } });
     await Category.findOrCreate({ where: { id: 2 }, defaults: { name: 'Shisha' } });
     await Category.findOrCreate({ where: { id: 3 }, defaults: { name: 'Wine' } });
 
-    // --- SEED ROLES & USERS FOR SILVER CHALLENGE ---
     const [adminRole] = await Role.findOrCreate({ where: { name: 'admin' } });
     const [normalRole] = await Role.findOrCreate({ where: { name: 'normal user' } });
+    await User.findOrCreate({ where: { username: 'Admin_Boss' }, defaults: { roleId: adminRole.id } });
+    await User.findOrCreate({ where: { username: 'Standard_Steve' }, defaults: { roleId: normalRole.id } });
 
-    await User.findOrCreate({
-        where: { username: 'Admin_Boss' },
-        defaults: { roleId: adminRole.id }
-    });
-
-    await User.findOrCreate({
-        where: { username: 'Standard_Steve' },
-        defaults: { roleId: normalRole.id }
-    });
-
-    const server = new ApolloServer({ typeDefs, resolvers, introspection: true });
-    await server.start();
-    server.applyMiddleware({ app });
-
+    // 2. Start Apollo GraphQL
+    const apolloServer = new ApolloServer({ typeDefs, resolvers, introspection: true });
+    await apolloServer.start();
+    apolloServer.applyMiddleware({ app });
     app.get('/api/items', (req, res) => res.json({ ok: true }));
 
+    // 3. Connect to NoSQL (MongoDB)
+    const MONGO_URI = "mongodb+srv://izzy:Memeliciu%4033@cluster0.e5wdwfb.mongodb.net/chatDB?retryWrites=true&w=majority";
+
+    if (process.env.NODE_ENV !== 'test') {
+        try {
+            await mongoose.connect(MONGO_URI);
+            console.log("🍃 Connected to MongoDB for Chat!");
+        } catch (err) {
+            console.error("MongoDB connection error:", err);
+        }
+    }
+
+    // 4. Setup WebSockets (Socket.io)
+    const httpServer = http.createServer(app);
+    const io = new Server(httpServer, {
+        cors: { origin: "*", methods: ["GET", "POST"] }
+    });
+
+    io.on("connection", async (socket) => {
+        console.log("A user connected to the chat!");
+
+        // When someone joins, send them the last 50 messages from the database
+        if (process.env.NODE_ENV !== 'test') {
+            const messages = await ChatMessage.find().sort({ time: 1 }).limit(50);
+            socket.emit("previousMessages", messages);
+        }
+
+        // When someone sends a message, save it to Mongo and broadcast it to everyone
+        socket.on("sendMessage", async (data) => {
+            if (process.env.NODE_ENV !== 'test') {
+                const newMsg = new ChatMessage({ user: data.user, text: data.text });
+                await newMsg.save();
+                io.emit("newMessage", newMsg);
+            }
+        });
+
+        socket.on("disconnect", () => console.log("User disconnected"));
+    });
+
+    // 5. Start Listening! (Notice we use httpServer now, not app)
     if (process.env.NODE_ENV !== 'test') {
         const PORT = process.env.PORT || 5000;
-        app.listen(PORT, '0.0.0.0', () => {
-            console.log(`🚀 DB Server ready on port ${PORT}`);
+        httpServer.listen(PORT, '0.0.0.0', () => {
+            console.log(`🚀 Fullstack Server ready on port ${PORT}`);
         });
     }
 }
