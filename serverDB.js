@@ -50,7 +50,6 @@ const SystemLog = sequelize.define('SystemLog', {
     username: { type: DataTypes.STRING, allowNull: false },
     role: { type: DataTypes.STRING, allowNull: false },
     action: { type: DataTypes.STRING, allowNull: false }
-    // Sequelize automatically adds a 'createdAt' timestamp!
 });
 
 const ObservationList = sequelize.define('ObservationList', {
@@ -81,7 +80,9 @@ const typeDefs = gql`
   type InventoryPage { data: [Item]  totalCount: Int  hasNextPage: Boolean }
   type Stats    { totalItems: Int  averagePrice: Float }
 
-  # --- GOLD CHALLENGE: NEW RETURN TYPES ---
+  type Role { id: ID! name: String! }
+  type User { id: ID! username: String! role: Role }
+
   type SystemLog { id: ID! username: String! role: String! action: String! createdAt: String }
   type FlaggedUser { id: ID! username: String! reason: String! createdAt: String }
 
@@ -89,17 +90,19 @@ const typeDefs = gql`
     items(page: Int, limit: Int): InventoryPage
     categories: [Category]
     statistics: Stats
-    # --- GOLD CHALLENGE: ADMIN QUERIES ---
     getLogs: [SystemLog]
     getFlaggedUsers: [FlaggedUser]
+    # --- AUTHENTICATION QUERY ---
+    login(username: String!): User
   }
   
   type Mutation {
-    # --- GOLD CHALLENGE: MUTATIONS NOW REQUIRE USER TRACKING ---
     addItem(name: String!, price: Float!, categoryId: ID!, desc: String, username: String!, role: String!): Item
     updateItem(id: ID!, name: String!, price: Float!, categoryId: ID!, desc: String, username: String!, role: String!): Item
     deleteItem(id: ID!, username: String!, role: String!): ID
     toggleGenerator(action: String!): String
+    # --- REGISTRATION MUTATION ---
+    register(username: String!): User
   }
 `;
 
@@ -114,6 +117,7 @@ const flagHacker = async (username, reason) => {
 
 // --- RESOLVERS ---
 const resolvers = {
+    User: { role: async (parent) => Role.findByPk(parent.roleId) },
     Query: {
         items: async (_, { page = 1, limit = 6 }) => {
             const offset = (page - 1) * limit;
@@ -126,14 +130,32 @@ const resolvers = {
             const avg = await Item.findOne({ attributes: [[sequelize.fn('AVG', sequelize.col('price')), 'avg']] });
             return { totalItems, averagePrice: parseFloat(avg?.dataValues?.avg || 0) };
         },
-        // --- GOLD CHALLENGE: FETCH LOGS ---
         getLogs: async () => await SystemLog.findAll({ order: [['createdAt', 'DESC']] }),
-        getFlaggedUsers: async () => await ObservationList.findAll({ order: [['createdAt', 'DESC']] })
+        getFlaggedUsers: async () => await ObservationList.findAll({ order: [['createdAt', 'DESC']] }),
+
+        // --- AUTHENTICATION RESOLVER ---
+        login: async (_, { username }) => {
+            const user = await User.findOne({ where: { username } });
+            if (!user) throw new Error("User not found. Please create an account.");
+            return user;
+        }
     },
     Item: { category: async (parent) => parent.Category || Category.findByPk(parent.categoryId) },
     Category: { items: async (parent) => Item.findAll({ where: { categoryId: parent.id } }) },
 
     Mutation: {
+        // --- REGISTRATION RESOLVER ---
+        register: async (_, { username }) => {
+            if (!username || username.trim() === '') throw new Error("Username cannot be empty.");
+            const existing = await User.findOne({ where: { username } });
+            if (existing) throw new Error("Username is already taken!");
+
+            const normalRole = await Role.findOne({ where: { name: 'normal user' } });
+            const user = await User.create({ username, roleId: normalRole.id });
+            await logAction(username, 'normal user', `New user registered account`);
+            return user;
+        },
+
         addItem: async (_, { name, price, categoryId, desc, username, role }) => {
             if (role !== 'admin') {
                 await logAction(username, role, `ILLEGAL ATTEMPT: Tried to add item ${name}`);
