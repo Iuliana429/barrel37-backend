@@ -2,7 +2,6 @@
 const { ApolloServer, gql } = require('apollo-server-express');
 const cors = require('cors');
 const { Sequelize, DataTypes } = require('sequelize');
-// --- NEW TOOLS FOR SILVER CHALLENGE ---
 const http = require('http');
 const { Server } = require('socket.io');
 const mongoose = require('mongoose');
@@ -23,12 +22,7 @@ if (process.env.NODE_ENV === 'test') {
     sequelize = new Sequelize(process.env.DATABASE_URL || "postgres://avnadmin:AVNS_tzD2DWTzG47jcFlU1-R@pg-3ce41d0e-ioniuliana05-5798.j.aivencloud.com:22591/defaultdb?ssl=true&sslmode=no-verify", {
         dialect: 'postgres',
         protocol: 'postgres',
-        dialectOptions: {
-            ssl: {
-                require: true,
-                rejectUnauthorized: false
-            }
-        },
+        dialectOptions: { ssl: { require: true, rejectUnauthorized: false } },
         logging: false
     });
 }
@@ -47,34 +41,34 @@ const Item = sequelize.define('Item', {
     categoryId: { type: DataTypes.INTEGER, allowNull: false }
 });
 
-// --- USER & ROLE MODELS (Silver Challenge) ---
-const Role = sequelize.define('Role', {
-    name: { type: DataTypes.STRING, allowNull: false, unique: true }
+const Role = sequelize.define('Role', { name: { type: DataTypes.STRING, allowNull: false, unique: true } });
+const Permission = sequelize.define('Permission', { action: { type: DataTypes.STRING, allowNull: false, unique: true } });
+const User = sequelize.define('User', { username: { type: DataTypes.STRING, allowNull: false, unique: true } });
+
+// --- GOLD CHALLENGE: LOGGING & SURVEILLANCE MODELS ---
+const SystemLog = sequelize.define('SystemLog', {
+    username: { type: DataTypes.STRING, allowNull: false },
+    role: { type: DataTypes.STRING, allowNull: false },
+    action: { type: DataTypes.STRING, allowNull: false }
+    // Sequelize automatically adds a 'createdAt' timestamp!
 });
 
-const Permission = sequelize.define('Permission', {
-    action: { type: DataTypes.STRING, allowNull: false, unique: true }
-});
-
-const User = sequelize.define('User', {
-    username: { type: DataTypes.STRING, allowNull: false, unique: true }
+const ObservationList = sequelize.define('ObservationList', {
+    username: { type: DataTypes.STRING, allowNull: false, unique: true },
+    reason: { type: DataTypes.STRING, allowNull: false }
 });
 
 // --- NoSQL CHAT SCHEMA (MongoDB) ---
 const chatSchema = new mongoose.Schema({
-    user: String,
-    text: String,
-    time: { type: Date, default: Date.now }
+    user: String, text: String, time: { type: Date, default: Date.now }
 });
 const ChatMessage = mongoose.model('ChatMessage', chatSchema);
 
 // --- RELATIONSHIPS ---
 Category.hasMany(Item, { foreignKey: 'categoryId', onDelete: 'CASCADE' });
 Item.belongsTo(Category, { foreignKey: 'categoryId' });
-
 Role.hasMany(User, { foreignKey: 'roleId' });
 User.belongsTo(Role, { foreignKey: 'roleId' });
-
 Role.belongsToMany(Permission, { through: 'RolePermissions' });
 Permission.belongsToMany(Role, { through: 'RolePermissions' });
 
@@ -87,60 +81,88 @@ const typeDefs = gql`
   type InventoryPage { data: [Item]  totalCount: Int  hasNextPage: Boolean }
   type Stats    { totalItems: Int  averagePrice: Float }
 
+  # --- GOLD CHALLENGE: NEW RETURN TYPES ---
+  type SystemLog { id: ID! username: String! role: String! action: String! createdAt: String }
+  type FlaggedUser { id: ID! username: String! reason: String! createdAt: String }
+
   type Query {
     items(page: Int, limit: Int): InventoryPage
     categories: [Category]
     statistics: Stats
+    # --- GOLD CHALLENGE: ADMIN QUERIES ---
+    getLogs: [SystemLog]
+    getFlaggedUsers: [FlaggedUser]
   }
+  
   type Mutation {
-    addItem(name: String!, price: Float!, categoryId: ID!, desc: String): Item
-    updateItem(id: ID!, name: String!, price: Float!, categoryId: ID!, desc: String): Item
-    deleteItem(id: ID!): ID
+    # --- GOLD CHALLENGE: MUTATIONS NOW REQUIRE USER TRACKING ---
+    addItem(name: String!, price: Float!, categoryId: ID!, desc: String, username: String!, role: String!): Item
+    updateItem(id: ID!, name: String!, price: Float!, categoryId: ID!, desc: String, username: String!, role: String!): Item
+    deleteItem(id: ID!, username: String!, role: String!): ID
     toggleGenerator(action: String!): String
   }
 `;
+
+// --- GOLD CHALLENGE: STEALTH LOGIC HELPERS ---
+const logAction = async (username, role, action) => {
+    await SystemLog.create({ username, role, action });
+};
+
+const flagHacker = async (username, reason) => {
+    await ObservationList.findOrCreate({ where: { username }, defaults: { reason } });
+};
 
 // --- RESOLVERS ---
 const resolvers = {
     Query: {
         items: async (_, { page = 1, limit = 6 }) => {
             const offset = (page - 1) * limit;
-            const { count, rows } = await Item.findAndCountAll({
-                include: Category,
-                limit,
-                offset,
-                order: [['createdAt', 'DESC']]
-            });
+            const { count, rows } = await Item.findAndCountAll({ include: Category, limit, offset, order: [['createdAt', 'DESC']] });
             return { data: rows, totalCount: count, hasNextPage: offset + limit < count };
         },
         categories: async () => Category.findAll(),
         statistics: async () => {
             const totalItems = await Item.count();
-            const avg = await Item.findOne({
-                attributes: [[sequelize.fn('AVG', sequelize.col('price')), 'avg']]
-            });
+            const avg = await Item.findOne({ attributes: [[sequelize.fn('AVG', sequelize.col('price')), 'avg']] });
             return { totalItems, averagePrice: parseFloat(avg?.dataValues?.avg || 0) };
-        }
+        },
+        // --- GOLD CHALLENGE: FETCH LOGS ---
+        getLogs: async () => await SystemLog.findAll({ order: [['createdAt', 'DESC']] }),
+        getFlaggedUsers: async () => await ObservationList.findAll({ order: [['createdAt', 'DESC']] })
     },
-
-    Item: {
-        category: async (parent) => parent.Category || Category.findByPk(parent.categoryId)
-    },
-    Category: {
-        items: async (parent) => Item.findAll({ where: { categoryId: parent.id } })
-    },
+    Item: { category: async (parent) => parent.Category || Category.findByPk(parent.categoryId) },
+    Category: { items: async (parent) => Item.findAll({ where: { categoryId: parent.id } }) },
 
     Mutation: {
-        addItem: async (_, { name, price, categoryId, desc }) => {
+        addItem: async (_, { name, price, categoryId, desc, username, role }) => {
+            if (role !== 'admin') {
+                await logAction(username, role, `ILLEGAL ATTEMPT: Tried to add item ${name}`);
+                await flagHacker(username, 'Attempted to add inventory without admin privileges');
+                throw new Error("Unauthorized action flagged.");
+            }
             const item = await Item.create({ name, price, categoryId: parseInt(categoryId), desc });
+            await logAction(username, role, `Added new item: ${name}`);
             return Item.findByPk(item.id, { include: Category });
         },
-        updateItem: async (_, { id, name, price, categoryId, desc }) => {
+        updateItem: async (_, { id, name, price, categoryId, desc, username, role }) => {
+            if (role !== 'admin') {
+                await logAction(username, role, `ILLEGAL ATTEMPT: Tried to edit item ID ${id}`);
+                await flagHacker(username, 'Attempted to edit inventory without admin privileges');
+                throw new Error("Unauthorized action flagged.");
+            }
             await Item.update({ name, price, categoryId: parseInt(categoryId), desc }, { where: { id } });
+            await logAction(username, role, `Updated item: ${name}`);
             return Item.findByPk(id, { include: Category });
         },
-        deleteItem: async (_, { id }) => {
+        deleteItem: async (_, { id, username, role }) => {
+            if (role !== 'admin') {
+                await logAction(username, role, `ILLEGAL ATTEMPT: Tried to delete item ID ${id}`);
+                await flagHacker(username, 'Attempted to delete inventory without admin privileges');
+                throw new Error("Unauthorized action flagged.");
+            }
+            const item = await Item.findByPk(id);
             await Item.destroy({ where: { id } });
+            await logAction(username, role, `Deleted item: ${item?.name || id}`);
             return id;
         },
         toggleGenerator: (_, { action }) => {
@@ -153,12 +175,7 @@ const resolvers = {
                 generatorInterval = setInterval(async () => {
                     const catId = Math.floor(Math.random() * 3) + 1;
                     const names = drinkNames[catId];
-                    await Item.create({
-                        name: names[Math.floor(Math.random() * names.length)],
-                        price: Math.floor(Math.random() * 80) + 30,
-                        categoryId: catId,
-                        desc: "Chef's Special"
-                    });
+                    await Item.create({ name: names[Math.floor(Math.random() * names.length)], price: Math.floor(Math.random() * 80) + 30, categoryId: catId, desc: "Chef's Special" });
                 }, 3000);
                 return "Started";
             } else if (action === 'stop') {
@@ -173,7 +190,6 @@ const resolvers = {
 
 // --- SERVER INITIALIZATION ---
 async function startServer() {
-    // 1. Connect to Postgres (Aiven)
     await sequelize.sync({ force: false });
     await Category.findOrCreate({ where: { id: 1 }, defaults: { name: 'Cocktail' } });
     await Category.findOrCreate({ where: { id: 2 }, defaults: { name: 'Shisha' } });
@@ -184,40 +200,27 @@ async function startServer() {
     await User.findOrCreate({ where: { username: 'Admin_Boss' }, defaults: { roleId: adminRole.id } });
     await User.findOrCreate({ where: { username: 'Standard_Steve' }, defaults: { roleId: normalRole.id } });
 
-    // 2. Start Apollo GraphQL
     const apolloServer = new ApolloServer({ typeDefs, resolvers, introspection: true });
     await apolloServer.start();
     apolloServer.applyMiddleware({ app });
     app.get('/api/items', (req, res) => res.json({ ok: true }));
 
-    // 3. Connect to NoSQL (MongoDB)
     const MONGO_URI = "mongodb+srv://izzy:Memeliciu%4033@cluster0.e5wdwfb.mongodb.net/chatDB?retryWrites=true&w=majority";
-
     if (process.env.NODE_ENV !== 'test') {
         try {
             await mongoose.connect(MONGO_URI);
             console.log("🍃 Connected to MongoDB for Chat!");
-        } catch (err) {
-            console.error("MongoDB connection error:", err);
-        }
+        } catch (err) { console.error("MongoDB connection error:", err); }
     }
 
-    // 4. Setup WebSockets (Socket.io)
     const httpServer = http.createServer(app);
-    const io = new Server(httpServer, {
-        cors: { origin: "*", methods: ["GET", "POST"] }
-    });
+    const io = new Server(httpServer, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
     io.on("connection", async (socket) => {
-        console.log("A user connected to the chat!");
-
-        // When someone joins, send them the last 50 messages from the database
         if (process.env.NODE_ENV !== 'test') {
             const messages = await ChatMessage.find().sort({ time: 1 }).limit(50);
             socket.emit("previousMessages", messages);
         }
-
-        // When someone sends a message, save it to Mongo and broadcast it to everyone
         socket.on("sendMessage", async (data) => {
             if (process.env.NODE_ENV !== 'test') {
                 const newMsg = new ChatMessage({ user: data.user, text: data.text });
@@ -225,23 +228,16 @@ async function startServer() {
                 io.emit("newMessage", newMsg);
             }
         });
-
-        socket.on("disconnect", () => console.log("User disconnected"));
     });
 
-    // 5. Start Listening! (Notice we use httpServer now, not app)
     if (process.env.NODE_ENV !== 'test') {
         const PORT = process.env.PORT || 5000;
-        httpServer.listen(PORT, '0.0.0.0', () => {
-            console.log(`🚀 Fullstack Server ready on port ${PORT}`);
-        });
+        httpServer.listen(PORT, '0.0.0.0', () => { console.log(`🚀 Fullstack Server ready on port ${PORT}`); });
     }
 }
 
-// --- SAFE SERVER INVOCATION ---
-if (process.env.NODE_ENV !== 'test') {
-    startServer();
-} else {
+if (process.env.NODE_ENV !== 'test') startServer();
+else {
     async function initTestMiddleware() {
         await sequelize.sync({ force: false });
         const server = new ApolloServer({ typeDefs, resolvers, introspection: true });
@@ -251,5 +247,4 @@ if (process.env.NODE_ENV !== 'test') {
     }
     initTestMiddleware();
 }
-
-module.exports = { app, sequelize, Category, Item, User, Role, Permission };
+module.exports = { app, sequelize, Category, Item, User, Role, Permission, SystemLog, ObservationList };
